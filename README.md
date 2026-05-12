@@ -1,6 +1,6 @@
 # Resume ATS Optimizer
 
-A Streamlit app that analyzes your resume against a job description using Claude AI, identifies keyword gaps, suggests ATS-optimized rewrites, and generates a tailored cover letter — all exportable as Word files.
+A Streamlit app that analyzes your resume against a job description using Claude AI, identifies keyword gaps, suggests ATS-optimized rewrites, and generates a tailored cover letter — all exportable as Word files. Designed and directed by the author, built with Claude Code.
 
 ## Features
 
