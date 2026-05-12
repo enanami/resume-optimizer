@@ -79,3 +79,9 @@ The app opens at `http://localhost:8501`.
 
 - Python 3.9+
 - Anthropic API key (Claude Sonnet)
+
+## Built With
+
+- [Streamlit](https://streamlit.io)
+- [Anthropic Claude API](https://console.anthropic.com)
+- [Claude Code](https://claude.ai/code) — AI coding assistant used to build this project
