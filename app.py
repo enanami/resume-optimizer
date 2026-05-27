@@ -3,6 +3,7 @@ import io
 import os
 import json
 import html as html_mod
+from datetime import datetime
 from difflib import SequenceMatcher
 
 import anthropic
@@ -90,6 +91,10 @@ When analyzing and optimizing resumes, you strictly follow these principles:
 
 7. **Conciseness for one-page fit**: All suggested content must be concise. Rewritten bullets
    must be under 120 characters. The goal is a final resume that fits on one letter-size page.
+
+8. **No em dashes**: Never use em dashes (—) in any rewritten resume content (summary, skills,
+   bullets). Use commas, periods, or parentheses instead. This applies to all user-facing
+   resume text — the JSON field values themselves must not contain "—".
 
 ## Response Format
 
@@ -227,7 +232,39 @@ def analyze_resume(resume_text: str, jd: str) -> dict:
     return json.loads(raw.strip())
 
 
+def auto_format_resume(text: str) -> str:
+    """Restructure resume text for optimal ATS formatting without changing content."""
+    response = _get_client().messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=4096,
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    "Reformat the resume below for maximum ATS formatting score. "
+                    "Preserve every fact, number, and accomplishment verbatim. Only restructure.\n\n"
+                    "RULES:\n"
+                    "- Line 1: candidate's full name (centered)\n"
+                    "- Lines 2-3: contact info (email, phone, city/state, LinkedIn) separated by ' | '\n"
+                    "- Use these standard ALL-CAPS section headers exactly: SUMMARY, EXPERIENCE, "
+                    "EDUCATION, SKILLS, PROJECTS, CERTIFICATIONS (only the ones the resume has)\n"
+                    "- Each job entry: bold company and title on one line; dates on the same line, "
+                    "separated from the title by 2+ spaces (will render right-aligned)\n"
+                    "- All bullet points start with '• ' (bullet + space). One sentence each\n"
+                    "- Use **bold** for company names, job titles, and degree names\n"
+                    "- Single column, no tables, no special characters or emojis\n"
+                    "- Do NOT use em dashes (—). Use hyphens, commas, or periods instead\n"
+                    "- Return ONLY the reformatted resume text, no commentary\n\n"
+                    f"{text}"
+                ),
+            }
+        ],
+    )
+    return response.content[0].text.strip()
+
+
 def generate_cover_letter(resume_text: str, jd: str) -> str:
+    today = datetime.now().strftime("%B %d, %Y")
     response = _get_client().messages.create(
         model="claude-sonnet-4-6",
         max_tokens=1024,
@@ -235,18 +272,32 @@ def generate_cover_letter(resume_text: str, jd: str) -> str:
             {
                 "role": "user",
                 "content": (
+                    f"Today's date is {today}.\n\n"
                     "Write a professional cover letter tailored to the job description below.\n\n"
-                    "Requirements:\n"
-                    "- Start with 'Dear Hiring Manager,'\n"
-                    "- 3–4 short paragraphs, 280–350 words total\n"
-                    "- Opening: specific enthusiasm for this role and company\n"
-                    "- Body: highlight 2–3 quantified achievements from the resume that directly "
-                    "match the job requirements; weave in key terms from the JD naturally\n"
-                    "- Closing: express eagerness to discuss, end with 'Sincerely,' "
-                    "followed by '[Your Name]'\n"
-                    "- Tone: confident and direct — no clichés like 'I am writing to apply'\n"
-                    "- Separate each paragraph with a blank line\n"
-                    "- Return ONLY the letter text, nothing else\n\n"
+                    "STRICT FORMAT (one line per item, exactly):\n"
+                    "Line 1: Full name (from resume)\n"
+                    "Line 2: City, State (from resume)\n"
+                    "Line 3: Email address (from resume)\n"
+                    "Line 4: Phone number (from resume)\n"
+                    "Line 5: LinkedIn URL (from resume — omit this line entirely if not present)\n"
+                    "[blank line]\n"
+                    f"{today}\n"
+                    "[blank line]\n"
+                    "Dear Hiring Manager, (or specific name if mentioned in the JD)\n"
+                    "[blank line]\n"
+                    "3 short body paragraphs separated by blank lines:\n"
+                    "  - Opening (50-70 words): specific enthusiasm for this role and company\n"
+                    "  - Body (90-120 words): 2 quantified achievements from the resume that match the JD\n"
+                    "  - Closing (40-60 words): brief, express eagerness to discuss\n"
+                    "[blank line]\n"
+                    "Sincerely,\n"
+                    "[Full name from resume]\n\n"
+                    "REQUIREMENTS:\n"
+                    "- Body paragraphs total 200–250 words (must fit one letter-size page with header)\n"
+                    "- Tone: confident and direct, no clichés like 'I am writing to apply'\n"
+                    "- Naturally weave keywords from the JD\n"
+                    "- Do NOT use em dashes (—). Use commas, periods, or hyphens instead\n"
+                    "- Return ONLY the letter text starting with the name, nothing else\n\n"
                     f"## RESUME\n\n{resume_text}\n\n"
                     f"## JOB DESCRIPTION\n\n{jd}"
                 ),
@@ -407,7 +458,7 @@ def to_word(text: str) -> bytes:
 def to_word_letter(text: str) -> bytes:
     doc = Document()
     for sec in doc.sections:
-        sec.top_margin = sec.bottom_margin = Inches(1)
+        sec.top_margin = sec.bottom_margin = Inches(0.8)
         sec.left_margin = sec.right_margin = Inches(1)
 
     for line in text.split("\n"):
@@ -418,9 +469,11 @@ def to_word_letter(text: str) -> bytes:
             run.font.name = "Arial"
             run.font.size = Pt(11)
             p.paragraph_format.space_before = Pt(0)
-            p.paragraph_format.space_after = Pt(2)
+            p.paragraph_format.space_after = Pt(0)
+            p.paragraph_format.line_spacing = 1.15
         else:
-            p.paragraph_format.space_after = Pt(8)
+            p.paragraph_format.space_after = Pt(4)
+            p.paragraph_format.line_spacing = 1.0
 
     buf = io.BytesIO()
     doc.save(buf)
@@ -489,14 +542,14 @@ def format_letter_html(text: str) -> str:
     parts = [
         "<div style='font-family:Arial,sans-serif;width:100%;padding:24px 28px;"
         "background:#fff;border:1px solid #d0d0d0;border-radius:3px;"
-        "line-height:1.6;color:#111;box-sizing:border-box;font-size:11pt;'>"
+        "line-height:1.35;color:#111;box-sizing:border-box;font-size:11pt;'>"
     ]
     for line in text.split("\n"):
         raw = line.strip()
         if raw:
-            parts.append(f"<div style='margin-bottom:3px'>{html_mod.escape(raw)}</div>")
+            parts.append(f"<div style='margin-bottom:1px'>{html_mod.escape(raw)}</div>")
         else:
-            parts.append("<div style='height:12px'></div>")
+            parts.append("<div style='height:9px'></div>")
     parts.append("</div>")
     return "\n".join(parts)
 
@@ -504,19 +557,30 @@ def format_letter_html(text: str) -> str:
 # ── Misc helpers ──────────────────────────────────────────────────────────────────
 
 def _fuzzy_replace(text: str, original: str, replacement: str, threshold: float = 0.72):
+    """Replace `original` in `text`, with multi-line block fallback for sections."""
     if original in text:
         return text.replace(original, replacement, 1), True
+
     norm_orig = " ".join(original.split())
+    n_orig_lines = max(1, len([ln for ln in original.split("\n") if ln.strip()]))
     lines = text.split("\n")
-    best_ratio, best_idx = 0.0, -1
-    for i, line in enumerate(lines):
-        clean = re.sub(r"\*\*", "", line)
-        ratio = SequenceMatcher(None, norm_orig, " ".join(clean.split())).ratio()
-        if ratio > best_ratio:
-            best_ratio, best_idx = ratio, i
-    if best_ratio >= threshold and best_idx >= 0:
-        lines[best_idx] = replacement
-        return "\n".join(lines), True
+    best_ratio, best_start, best_end = 0.0, -1, -1
+
+    max_window = min(len(lines), max(n_orig_lines + 3, 6))
+    for window in range(1, max_window + 1):
+        for i in range(len(lines) - window + 1):
+            block = "\n".join(lines[i : i + window])
+            if not block.strip():
+                continue
+            clean = re.sub(r"\*\*", "", block)
+            ratio = SequenceMatcher(None, norm_orig, " ".join(clean.split())).ratio()
+            if ratio > best_ratio:
+                best_ratio, best_start, best_end = ratio, i, i + window
+
+    if best_ratio >= threshold and best_start >= 0:
+        new_lines = lines[:best_start] + replacement.split("\n") + lines[best_end:]
+        return "\n".join(new_lines), True
+
     return text, False
 
 
@@ -770,6 +834,18 @@ if st.session_state.analysis:
             else:
                 st.success("All rewrites applied! See the updated preview on the right →")
 
+        if st.button("🪄 Auto-Format Resume", type="secondary",
+                     help="Use AI to restructure the resume for better ATS formatting score"):
+            base = st.session_state.get("resume_editor", st.session_state.resume_text)
+            with st.spinner("Reformatting…"):
+                try:
+                    st.session_state["resume_editor"] = auto_format_resume(base)
+                    st.success("Resume reformatted! Check the Preview tab.")
+                except RuntimeError as exc:
+                    st.error(str(exc))
+                except anthropic.APIError as exc:
+                    st.error(f"Anthropic API error: {exc}")
+
     st.divider()
 
     # 5 ── Two columns: Keyword Gaps + Priority  |  Preview + Edit ────────────────
@@ -794,12 +870,6 @@ if st.session_state.analysis:
                     st.markdown("\n".join(f"- `{item}`" for item in items))
         if not any_gaps:
             st.success("No significant keyword gaps detected!")
-
-        suggestions = a.get("critical_suggestions", [])
-        if suggestions:
-            st.subheader("🚀 Priority Improvements")
-            for i, s in enumerate(suggestions, 1):
-                st.info(f"**{i}.** {s}")
 
     with right_col:
         tab_preview, tab_edit = st.tabs(["👁️ Preview", "✏️ Edit Source"])
