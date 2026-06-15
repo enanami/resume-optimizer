@@ -102,12 +102,11 @@ You always respond with a single, valid JSON object using exactly this schema. N
 no code fences, no explanatory text before or after the JSON:
 
 {
-  "ats_score_estimate": <integer 0-100, honest estimate of current ATS compatibility>,
   "score_breakdown": {
-    "keyword_match":    <integer 0-100>,
-    "quantification":   <integer 0-100>,
-    "formatting":       <integer 0-100>,
-    "relevance":        <integer 0-100>
+    "keyword_match":    <integer 0-100, how well resume keywords cover the JD>,
+    "quantification":   <integer 0-100, use of metrics and quantified achievements>,
+    "formatting":       <integer 0-100, ATS-parseable structure and section headers>,
+    "relevance":        <integer 0-100, overall fit of experience to this role>
   },
   "keyword_gaps": {
     "technical_skills":   ["missing technical skills mentioned or implied in JD"],
@@ -196,6 +195,62 @@ def extract_docx(data: bytes) -> str:
             line = f"• {line}"
         lines.append(line)
     return "\n".join(lines)
+
+
+# ── Filenames ─────────────────────────────────────────────────────────────────────
+
+def candidate_name_token(resume_text: str) -> str:
+    """Best-effort candidate name from the resume, as a filename-safe token.
+
+    Uses the first non-empty line (where a name almost always sits), keeps
+    letters/spaces/hyphens/apostrophes, and joins the words with underscores.
+    Falls back to 'Candidate' when no usable name is found.
+    """
+    for line in resume_text.splitlines():
+        cleaned = re.sub(r"[^A-Za-z\s'\-]", "", line).strip()
+        words = cleaned.split()
+        if words:
+            return "_".join(words[:4])
+    return "Candidate"
+
+
+def build_filenames(resume_text: str) -> tuple[str, str]:
+    """Return (resume_filename, cover_letter_filename) as Name_mmddyyyy .docx."""
+    name = candidate_name_token(resume_text)
+    date = datetime.now().strftime("%m%d%Y")
+    return f"Resume_{name}_{date}.docx", f"CoverLetter_{name}_{date}.docx"
+
+
+# ── Scoring ─────────────────────────────────────────────────────────────────────
+
+# Relative weights of each breakdown component in the overall ATS score.
+SCORE_WEIGHTS = {
+    "keyword_match":  0.35,
+    "relevance":      0.30,
+    "quantification": 0.20,
+    "formatting":     0.15,
+}
+
+
+def compute_ats_score(breakdown: dict) -> int:
+    """Weighted overall ATS score derived from the breakdown sub-scores.
+
+    Computed deterministically from the four components rather than taken from
+    the model's separate holistic estimate, so the number is stable and
+    explainable. Re-normalizes over whichever components are present.
+    """
+    weighted = 0.0
+    total_weight = 0.0
+    for key, weight in SCORE_WEIGHTS.items():
+        try:
+            value = float(breakdown[key])
+        except (KeyError, TypeError, ValueError):
+            continue
+        weighted += value * weight
+        total_weight += weight
+    if not total_weight:
+        return 0
+    return round(weighted / total_weight)
 
 
 # ── API calls ─────────────────────────────────────────────────────────────────────
@@ -295,6 +350,8 @@ def generate_cover_letter(resume_text: str, jd: str) -> str:
                     "REQUIREMENTS:\n"
                     "- Body paragraphs total 200–250 words (must fit one letter-size page with header)\n"
                     "- Tone: confident and direct, no clichés like 'I am writing to apply'\n"
+                    "- Do NOT use the phrase 'I would welcome the opportunity to discuss'. "
+                    "Use direct phrasing like 'I look forward to discussing' instead\n"
                     "- Naturally weave keywords from the JD\n"
                     "- Do NOT use em dashes (—). Use commas, periods, or hyphens instead\n"
                     "- Return ONLY the letter text starting with the name, nothing else\n\n"
@@ -602,7 +659,8 @@ def _clear_rewrite_keys() -> None:
 defaults = {
     "analysis": None,
     "resume_text": "",
-    "export_filename": "optimized_resume.docx",
+    "export_filename": "Resume.docx",
+    "cover_letter_filename": "CoverLetter.docx",
     "last_uploaded": None,
     "rescore": None,
     "analysis_jd": "",
@@ -640,9 +698,10 @@ with col_resume:
                 if extracted:
                     st.session_state.resume_text = extracted
                     st.session_state.last_uploaded = uploaded.name
-                    st.session_state.export_filename = (
-                        uploaded.name.rsplit(".", 1)[0] + "_optimized.docx"
-                    )
+                    (
+                        st.session_state.export_filename,
+                        st.session_state.cover_letter_filename,
+                    ) = build_filenames(extracted)
                     st.session_state.analysis = None
                     st.session_state.rescore = None
                     st.session_state.cover_letter = ""
@@ -700,8 +759,8 @@ if st.session_state.analysis:
 
     # 1 ── Scores ─────────────────────────────────────────────────────────────────
     st.subheader("📊 Analysis Results")
-    score = int(a.get("ats_score_estimate", 0))
     bk = a.get("score_breakdown", {})
+    score = compute_ats_score(bk)
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Overall ATS Score", f"{score} / 100")
     m2.metric("Keyword Match", bk.get("keyword_match", "—"))
@@ -911,8 +970,8 @@ if st.session_state.analysis:
             except (TypeError, ValueError):
                 return None
 
-        new_score = int(rs.get("ats_score_estimate", 0))
-        old_score = int(orig.get("ats_score_estimate", 0))
+        new_score = compute_ats_score(rs_bk)
+        old_score = compute_ats_score(orig_bk)
         st.subheader("📈 Updated Score")
         rm1, rm2, rm3, rm4, rm5 = st.columns(5)
         rm1.metric("Overall ATS Score", f"{new_score} / 100", delta=new_score - old_score)
@@ -968,12 +1027,9 @@ if st.session_state.resume_text:
                 )
 
             cl_export = st.session_state.get("cl_editor", st.session_state.cover_letter)
-            cl_filename = st.session_state.export_filename.replace(
-                "_optimized.docx", "_cover_letter.docx"
-            )
             st.download_button(
                 label="📥 Download Cover Letter as Word (.docx)",
                 data=to_word_letter(cl_export),
-                file_name=cl_filename,
+                file_name=st.session_state.cover_letter_filename,
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             )
